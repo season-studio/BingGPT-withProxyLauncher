@@ -6,6 +6,7 @@ const {
   ipcMain,
   Menu,
   BrowserWindow,
+  clipboard
 } = require('electron')
 const contextMenu = require('electron-context-menu')
 const Store = require('electron-store')
@@ -14,7 +15,13 @@ const fs = require('fs')
 const childProcess = require("child_process");
 const net = require("net");
 
-const configFilePath = path.resolve(path.dirname(process.execPath), "config.json");
+let configFilePath = app.commandLine.getSwitchValue('config');
+if (configFilePath) {
+    configFilePath = path.resolve(process.cwd(), configFilePath);
+} else {
+    configFilePath = path.resolve(path.dirname(process.execPath), "config.json");
+}
+console.log("config file is:", configFilePath);
 const configStr = (function () {
     try {
         return fs.readFileSync(configFilePath);
@@ -32,12 +39,12 @@ const configObject = (function () {
 
 async function startProxy() {
     try {
-        if (configObject?.proxy?.serverApp?.path) {
+        if (configObject.proxy?.serverApp?.path) {
             let workDir = configObject.proxy.serverApp.workDir || path.dirname(configObject.proxy.serverApp.path);
             childProcess.exec(`"${configObject.proxy.serverApp.path}" ${configObject.proxy.serverApp.args || ""}`, {
                 cwd: workDir
             });
-            if (configObject?.proxy?.checker?.port) {
+            if (configObject.proxy?.checker?.port) {
                 const timeout = Number(configObject.proxy.checker.timeout) || 60;
                 async function checker() {
                     let ret = false;
@@ -124,7 +131,12 @@ const createWindow = () => {
     // Get language
     const locale = app.getLocale() || 'en-US'
     // Hide main menu (Windows)
-    Menu.setApplicationMenu(null)
+    Menu.setApplicationMenu(null);
+    // The url and user-agent
+    const bingUrl = `https://edgeservices.bing.com/edgediscover/query?&${isDarkMode ? 'dark' : 'light'
+        }schemeovr=1&FORM=SHORUN&udscs=1&udsnav=1&setlang=${locale}&features=udssydinternal&clientscopes=windowheader,coauthor,chat,&udsframed=1`
+    const userAgent =
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.0.0.0'
     // Create context menu
     contextMenu({
         window: mainWindow.webContents,
@@ -137,6 +149,17 @@ const createWindow = () => {
                 click: () => {
                     mainWindow.reload()
                 },
+            },
+            {
+                label: 'Reload the default URL',
+                visible: parameters.selectionText.trim().length === 0,
+                click: () => {
+                    mainWindow.loadURL(bingUrl);
+                },
+            },
+            {
+                type: 'separator',
+                visible: parameters.selectionText.trim().length === 0,
             },
             {
                 label: 'Export',
@@ -257,14 +280,24 @@ const createWindow = () => {
                 label: 'Reset',
                 visible: parameters.selectionText.trim().length === 0,
                 click: () => {
-                    const session = mainWindow.webContents.session
-                    session
-                        .clearStorageData({
-                            storages: ['localstorage', 'cookies'],
-                        })
-                        .then(() => {
-                            mainWindow.reload()
-                        })
+                    dialog.showMessageBox({
+                        type: 'question',
+                        title: 'Reset',
+                        message: 'Are you sure to clear the all cache data?',
+                        buttons: ['Yes', 'No']
+                    }).then((result) => {
+                        if (result.response === 0) {
+                            const session = mainWindow.webContents.session
+                            session
+                                .clearStorageData({
+                                    storages: ['localstorage', 'cookies'],
+                                })
+                                .then(() => {
+                                    mainWindow.reload()
+                                });
+                        }
+                    });
+                    
                 },
             },
             {
@@ -286,20 +319,54 @@ const createWindow = () => {
                 },
             },
             {
+                type: 'separator',
+                visible: parameters.selectionText.trim().length === 0,
+            },
+            {
                 label: 'Configuation File...',
                 visible: parameters.selectionText.trim().length === 0,
                 click: () => {
                     shell.openExternal(configFilePath);
                 }
+            },
+            {
+                label: 'Show and Copy the current URL',
+                visible: parameters.selectionText.trim().length === 0,
+                click: () => {
+                    let url = mainWindow.webContents.getURL();
+                    clipboard.writeText(url);
+                    dialog.showMessageBox({
+                        type: 'info',
+                        title: 'Current URL',
+                        message: 'Current URL is',
+                        detail: url,
+                        buttons: ['OK']
+                    });
+                }
+            },
+            {
+                label: 'Load a URL from the clipboard',
+                visible: parameters.selectionText.trim().length === 0,
+                click: () => {
+                    let url = clipboard.readText();
+                    dialog.showMessageBox({
+                        type: 'question',
+                        title: 'Load URL',
+                        message: 'Load URL is',
+                        detail: url,
+                        buttons: ['Yes', 'No']
+                    }).then((result) => {
+                        if (result.response === 0) {
+                            mainWindow.loadURL(url)
+                        }
+                    });
+                }
             }
         ],
     })
     // Load Bing
-    const bingUrl = `https://edgeservices.bing.com/edgediscover/query?&${isDarkMode ? 'dark' : 'light'
-        }schemeovr=1&FORM=SHORUN&udscs=1&udsnav=1&setlang=${locale}&features=udssydinternal&clientscopes=windowheader,coauthor,chat,&udsframed=1`
-    const userAgent =
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.0.0.0'
-    mainWindow.loadURL(bingUrl)
+    mainWindow.loadURL(bingUrl);
+    console.log(bingUrl);
     // Open links in default browser
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
         shell.openExternal(url)
@@ -333,10 +400,13 @@ const createWindow = () => {
         }
     )
     // 设置代理
-    mainWindow.webContents.session.setProxy({
-        mode: 'fixed_servers',
-        proxyRules: 'socks5://127.0.0.1:10808'
-    });
+    const proxyRules = configObject.proxy?.rules;
+    if (proxyRules) {
+        mainWindow.webContents.session.setProxy({
+            mode: 'fixed_servers',
+            proxyRules
+        });
+    }
     // Modify headers
     mainWindow.webContents.session.webRequest.onBeforeSendHeaders(
         (details, callback) => {
